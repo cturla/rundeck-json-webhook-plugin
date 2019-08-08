@@ -29,13 +29,16 @@ import org.slf4j.LoggerFactory;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.HttpURLConnection;
+import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.util.Map;
 
 @Plugin( service="Notification",name="JsonWebhookNotification" )
 @PluginDescription( title="JSON Webhook", description="POST Webhook in the JSON format" )
 public class JsonWebhookNotificationPlugin implements NotificationPlugin {
-    private final Logger logger = LoggerFactory.getLogger( JsonWebhookNotificationPlugin.class );
+    private final Logger logger = LoggerFactory.getLogger(getClass());
+
+    private final int CONNECTION_TIMEOUT = 5 * 1000; //5 seconds
 
     @PluginProperty( name = "webhookURL",
             title = "URL(s)",
@@ -47,70 +50,79 @@ public class JsonWebhookNotificationPlugin implements NotificationPlugin {
         // Do not remove constructor
     }
 
-    public boolean postNotification( String trigger, Map executionData, Map config ) {
-        // convert map to json
-        Gson gson = new Gson();
-        String requestPayload = gson.toJson( ImmutableMap.of( "trigger", trigger, "execution",
-                executionData, "config", config ) );
-
-        String[] strUrls = STR_WEBHOOK_URL.split( "," );
+    public boolean postNotification(String trigger, Map executionData, Map config) {
+        String[] strUrls = STR_WEBHOOK_URL.split(",");
         if ( strUrls.length > 0 ) {
-            for ( String strUrl : strUrls ) {
-                if ( strUrl.length() == 0 || strUrl.trim().length() == 0 )
+
+            // convert map to json
+            Gson gson = new Gson();
+            String requestPayload = gson.toJson(ImmutableMap.of("trigger", trigger,
+                    "execution", executionData,
+                    "config", config));
+
+            for (String strUrl : strUrls) {
+                if (strUrl.length() == 0 || strUrl.trim().length() == 0)
                     continue;
 
-                if ( logger.isDebugEnabled() )
-                    logger.debug( "Sending notification to [{}]", strUrl );
+                if (logger.isDebugEnabled())
+                    logger.debug("Sending notification to [{}]", strUrl);
 
                 // post json webhook
-                postWebhook( strUrl, requestPayload );
+                postWebhook(strUrl, requestPayload);
             }
         }
 
         return true;
     }
 
-    private void postWebhook( String strUrl, String requestPayload ) {
+    private void postWebhook(String strUrl, String requestPayload) {
         HttpURLConnection connection = null;
         try {
-            URL url = new URL( strUrl );
-            connection = openConnection( url );
-            if ( connection != null ) {
-                appendBody( connection, requestPayload );
+            URL url = new URL(strUrl);
+            connection = openConnection(url);
+            if (connection != null) {
+                appendBody(connection, requestPayload);
                 connection.connect();
 
-                if ( connection.getResponseCode() != 200 )
-                    logger.warn( "Error {}, failed to send notification to [{}], response: {}", connection.getResponseCode(),
-                            strUrl, connection.getResponseMessage() );
+                if (connection.getResponseCode() != 200)
+                    logger.warn("Error {}, failed to send notification to [{}], response: {}", connection.getResponseCode(),
+                            strUrl, connection.getResponseMessage());
             }
+        } catch ( SocketTimeoutException ex ) {
+            logger.warn("Failed to establish connection to [" + strUrl + "]", ex);
         } catch ( Exception ex ) {
-            logger.warn( "Failed to send notification: [" + ex.getMessage() + "]", ex );
+            logger.warn("Unhandled exception while sending notification", ex);
         } finally {
-            if ( connection != null )
+            if (connection != null)
                 connection.disconnect();
         }
     }
 
-    private HttpURLConnection openConnection( URL requestUrl ) {
+    private HttpURLConnection openConnection(URL requestUrl) {
         try {
-            final HttpURLConnection connection = (HttpURLConnection) requestUrl.openConnection();
+            HttpURLConnection connection = (HttpURLConnection) requestUrl.openConnection();
             connection.setRequestMethod("POST");
             connection.setRequestProperty("Content-Type", "application/json");
             connection.setDoInput(true);
             connection.setDoOutput(true);
+            connection.setConnectTimeout(CONNECTION_TIMEOUT);
+            connection.setReadTimeout(CONNECTION_TIMEOUT);
 
             return connection;
-        } catch (final IOException ex) {
-            logger.warn( "Failed to open connection to url: [" + requestUrl + "]", ex );
+        } catch (SocketTimeoutException ex) {
+            logger.warn( "Failed to establish connection to [" + requestUrl + "]", ex );
+            return null;
+        } catch (Exception ex) {
+            logger.warn( "Unhandled exception while establishing connection", ex );
             return null;
         }
     }
 
-    private void appendBody( HttpURLConnection connection, String payload ) {
-        try ( final DataOutputStream writer = new DataOutputStream(connection.getOutputStream()) ) {
+    private void appendBody(HttpURLConnection connection, String payload) {
+        try (final DataOutputStream writer = new DataOutputStream(connection.getOutputStream())) {
             writer.writeBytes( payload );
             writer.flush();
-        } catch ( IOException ex ) {
+        } catch (IOException ex) {
             logger.warn( "Unable to write request payload", ex );
         }
     }
